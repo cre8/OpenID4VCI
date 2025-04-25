@@ -1374,6 +1374,86 @@ Cache-Control: no-store
 }
 ```
 
+# Event Registration Endpoint {#event-registration-endpoint}
+
+If the Issuer declares support for notification functionality in its metadata, the Wallet can register for notifications.Support for this endpoint is OPTIONAL. The Wallet can not assume that the Issuer will always send notifications for every subscribed event. TODO: more info
+
+The Wallet MUST present to the Event Registration Endpoint a valid Access Token issued at the Token Endpoint as defined in (#token-endpoint).
+
+A Credential Issuer that requires a request to the Event Registration Endpoint MUST ensure the Access Token issued by the Authorization Server is valid at the Event Registration Endpoint.
+
+Communication with the Event Registration Endpoint MUST utilize TLS.
+
+## Event Registration Request
+
+The Wallet sends an HTTP POST request to the Event Registration Endpoint with the following parameters in the entity-body and using the `application/json` media type.
+
+* `events`: REQUIRED. An array of Event objects that the Wallet registers to receive notifications for. Each Event object MUST include the following parameters:
+  * `type`: REQUIRED. A string identifying the event type the Wallet wants to receive. Note: The type of the event will not be included by the Issuer in the Notification sent to the Receiver. See [Event Types](#event-types) for the list of supported event types.
+  * `notification_state`: REQUIRED. An opaque string value chosen by the Wallet, which the Issuer includes in the payload when sending notifications to the Receiver. How the Wallet obtains this `notification_state` and how it maps the `notification_state` to the event type and credential issuance lifecycle is out of scope for this specification.
+* `token`: REQUIRED. A bearer token used by the Issuer to authorize with the Receiver. The exact implementation of the token creation, exchange between Wallet and Receiver, verification and revocation is out of scope of the specification.
+* `endpoint`: REQUIRED. URL of the Receiver's Wallet Notification Endpoint. See [Event Notifications Flow](#event-notifications-flow) for usage details.
+* `expiry`: OPTIONAL. A numeric value indicating the expiration time of the `token` and associated `endpoint`, expressed in seconds. The Issuer MUST NOT send notifications to the `endpoint` after this expiration time has passed.
+
+Additional Notification Request parameters MAY be defined and used.
+The Credential Issuer MUST ignore any unrecognized parameters.
+
+Below is a non-normative example of a Event Registration Request:
+
+```http
+POST /notification HTTP/1.1
+Host: server.example.com
+Content-Type: application/json
+Authorization: Bearer czZCaGRSa3F0MzpnWDFmQmF0M2JW
+
+{
+  "events": [
+    {
+      "type": "credential_ready",
+      "notification_state": "djdk39djsn"  
+    }
+  ], 
+  "token": "endiekjsdliuhrljhbs9a8Ddknkamjbvsjgajgafoijlijkg",
+  "endpoint": "https://wallet-backend.com/notify"
+}
+```
+
+TBD: when sending a DELETE reuest, the Issuer MUST remove the event registration.
+
+### Successful Event Registration Response
+
+When the Credential Issuer has successfully received the Event Registration Request from the Wallet, it MUST respond with an HTTP status code in the 2xx range. Use of the HTTP status code 204 (No Content) is RECOMMENDED.
+
+Below is a non-normative example of response to a successful Notification Request:
+
+```http
+HTTP/1.1 204 No Content
+```
+
+### Event Registration Error Response
+
+If the Event Registration Request does not contain an Access Token or contains an invalid Access Token, the Event Registration Endpoint returns an Authorization Error Response, such as defined in Section 3 of [@!RFC6750].
+
+When the `notification_id` value is invalid, the HTTP response MUST use the HTTP status code 400 (Bad Request) and set the content type to `application/json` with the following parameters in the JSON-encoded response body:
+
+* `error`: REQUIRED. The value of the `error` parameter SHOULD be one of the following ASCII [@!USASCII] error codes:
+  * `invalid_type`: The `type` of one of the events in the Event Registration Request is not supported.
+  * `invalid_event_registration_request`: The Event Registration Request is missing a required parameter, includes an unsupported parameter or parameter value, repeats the same parameter, or is otherwise malformed.
+
+It is at the discretion of the Issuer to decide how to proceed after returning an error response.
+
+The following is a non-normative example of a Notification Error Response when an invalid `invalid_type` value was used:
+
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "error": "invalid_type"
+}
+```
+
 # Metadata
 
 ## Client Metadata {#client-metadata}
@@ -1469,6 +1549,9 @@ This specification defines the following Credential Issuer Metadata parameters:
       * `background_image`: OPTIONAL. Object with information about the background image of the Credential. At least the following parameter MUST be included:
           * `uri`: REQUIRED. String value that contains a URI where the Wallet can obtain the background image of the Credential from the Credential Issuer. The Wallet needs to determine the scheme, since the URI value could use the `https:` scheme, the `data:` scheme, etc.
       * `text_color`: OPTIONAL. String value of a text color of the Credential represented as numerical color values defined in CSS Color Module Level 37 [@!CSS-Color].
+* `events`: OPTIONAL Object with information about the events that the Credential Issuer supports. The presence of this parameter means that the issuer supports sending notifications to the Wallet. The following non-exhaustive set of parameters MAY be included:
+  * `event_types_supported`: REQUIRED. Array of case sensitive strings that identify the event types supported by the Credential Issuer. Valid values are defined in (#event-types), other values MAY be used.
+  * `event_registration_endpoint`: OPTIONAL. URL of the Credential Issuer's Event Registration Endpoint, as defined in (#event-registration-endpoint). This URL MUST use the `https` scheme and MAY contain port, path, and query parameter components. If omitted, the Credential Issuer does not support the Event Registration Endpoint.
 
 An Authorization Server that only supports the Pre-Authorized Code grant type MAY omit the `response_types_supported` parameter in its metadata despite [@!RFC8414] mandating it.
 
@@ -1608,6 +1691,50 @@ Credential Refresh can be initiated by the Wallet independently from the Credent
 
 It is up to the Credential Issuer whether to update both the signature and the claim values, or only the signature.
 
+## Notification Security
+
+The introduction of push-based notifications between Credential Issuers and Wallets adds new communication paths that must be secured to maintain the integrity, confidentiality, and trustworthiness of the overall issuance process. The following considerations apply:
+
+### Endpoint Authentication and Authorization
+
+Issuers MUST authenticate to the Wallet’s notification endpoint using an authorization token included in the notify.token parameter. This token MUST be treated as a bearer credential and MUST only be transmitted over secure channels. The Wallet or Wallet Backend MUST validate this token and reject requests from unauthenticated sources.
+
+### Transport Security
+
+All communication to the notification endpoint MUST occur over HTTPS with TLS 1.2 or higher to protect against man-in-the-middle and passive eavesdropping attacks. This aligns with existing TLS requirements in this specification and ensures both confidentiality and message integrity.
+
+### Endpoint Confidentiality
+
+The Wallet MUST treat the Wallet Notification Endpoint URL as sensitive information and SHOULD NOT expose it to third parties or persist it unnecessarily, to avoid enabling unauthorized actors to target the endpoint.
+
+### Replay Attack Mitigation
+
+Issuers SHOULD include a unique identifier or timestamp in each notification payload. The Wallet SHOULD track recent identifiers and reject duplicates to protect against replay attacks. This can be implemented through session-level nonce tracking or message deduplication.
+
+### Authorization Scope Isolation
+
+Tokens used to access the Wallet Notification Endpoint SHOULD be scoped to a specific issuance session and SHOULD NOT grant broader access to Wallet functionality. These tokens SHOULD expire after a reasonable period or after a defined number of uses to reduce misuse risk.
+
+### Notification Delivery Failures
+
+The Issuer SHOULD implement retry logic using exponential backoff when a notification delivery fails due to transient errors. However, it MUST avoid infinite retries. After a fixed number of failed attempts, the Issuer MAY log the failure and rely on fallback mechanisms like Wallet polling.
+
+### Rate Limiting and Abuse Prevention
+
+The Wallet or Receiver SHOULD implement rate limiting to defend against accidental or malicious overload. Notifications from a given Issuer SHOULD be subject to throttling and abuse detection to prevent denial-of-service scenarios.
+
+### Notification Payload Validation
+
+The Wallet MUST validate incoming notification payloads to ensure they conform to expected structure and values. Malformed or unexpected payloads MUST be rejected. Any parsing or transformation operations SHOULD be designed to avoid injection attacks.
+
+### Token Storage and Protection
+
+The authorization token for the Wallet Notification Endpoint MUST be stored securely by the Issuer and treated as a credential. It SHOULD NOT be logged or included in URLs. Wallets MUST assume the token can be misused if leaked and treat it with similar protections as access tokens.
+
+### Trust Model Clarity
+
+The specification assumes that the Wallet Notification Endpoint is provided and operated by a Receiver, e.g., a Wallet Backend, not the Wallet itself. As such, implementers MUST clearly document and understand the trust relationships and interfaces between Wallet, Receiver, and Credential Issuer.
+
 # Privacy Considerations
 
 When [@!RFC9396] is used, the Privacy Considerations of that specification also apply.
@@ -1716,6 +1843,46 @@ or acting on the received Credential Offer.
 The Wallet transmits and stores sensitive information about the End-User. To ensure that the
 Wallet can handle those appropriately (i.e., according to a certain trust framework or a
 regulation), the Credential Issuer should properly authenticate the Wallet and ensure it is a trusted entity. For more details, see (#trust-between-wallet-and-issuer).
+
+## Notification Privacy
+
+Push-based notifications introduce new data flows and metadata exchange between Credential Issuers, Wallets, and potentially Wallet Backends. These mechanisms must be designed with strong privacy guarantees to protect users and their credentials from tracking, profiling, or unintended data exposure. The following considerations apply:
+
+### Data Minimization
+
+The notification payload is limited to the minimal data required for the Wallet—specifically, an opaque identifier chosen by the Wallet for a particular event type within a specific credential lifecycle session—to identify the associated event type and issuance process. Personally identifiable information (PII), credential data, or unique user identifiers MUST NOT be included in the notification message.
+
+### User Consent and Transparency
+
+Wallets MUST obtain explicit user consent before registering a Wallet Notification Endpoint with the Issuer. Wallet Providers acting as Receivers SHOULD present clear information to the user explaining that the Wallet may receive asynchronous updates from an Issuer and what data such updates contain.
+
+### Anonymity and Linkability
+
+Notification endpoints MAY allow an Issuer to infer relationships between issuance sessions and Wallet instances. Wallet Providers acting as Receivers SHOULD consider mechanisms to avoid making endpoints user-identifiable across Issuers or issuance sessions, for example by rotating tokens per transaction. This mitigates risks of cross-issuer linkability or user profiling.
+
+### Notification Routing Through Third Parties
+
+If the notification is delivered via a Wallet Backend or push messaging service (e.g., Firebase Cloud Messaging), the involvement of third parties introduces potential data sharing. Wallet Providers as Receivers MUST assess the privacy policies and practices of such intermediaries and ensure that no unnecessary data is exposed. They SHOULD avoid routing credential-specific metadata through these services whenever possible.
+
+### Wallet Notification Endpoint Lifecycle
+
+The Wallet SHOULD register a Wallet Notification Endpoint only for the duration necessary to receive relevant events. Endpoints SHOULD be invalidated after use or upon expiration to minimize the risk of correlation and tracking.
+
+### Avoiding Persistent Identifiers
+
+Persistent identifiers (e.g., user IDs, Wallet instance IDs) MUST NOT be included in the event request or the payload. Issuers SHOULD NOT infer or attempt to associate Notification Requests with specific users unless strictly required and consented to.
+
+### Observability by Issuers
+
+While notifications improve efficiency, they also increase visibility for Issuers into the Wallet’s behavior (e.g., how long it takes the Wallet to react). Wallets SHOULD ensure that internal state transitions are not externally observable beyond what is needed for credential retrieval.
+
+### Log Management and Data Retention
+
+Credential Issuers and Wallet Providers MUST treat notification data as sensitive and SHOULD apply strict retention policies. Logs that include endpoint URLs, tokens, or session identifiers SHOULD be encrypted and retained only as long as needed for audit or troubleshooting purposes.
+
+### Regulatory Compliance
+
+Wallet Providers and Issuers SHOULD evaluate whether the use of notification infrastructure constitutes personal data processing under regulations such as GDPR. If so, appropriate legal bases (e.g., consent, legitimate interest) must be established, and data subject rights must be supported.
 
 {backmatter}
 
@@ -2774,9 +2941,104 @@ The End-User installs a new Wallet and opens it. The Wallet offers the End-User 
 
 Wallet Providers may also provide a market place where Issuers can register to be found for Wallet-initiated flows.
 
+# Events {#events}
+
+## Event Types {#event-types}
+
+To ensure interoperability across different Credential Issuers and Wallets, the following event types are defined:
+
+* `credential_ready`: The `credential_ready` event informs the Wallet that a `transaction_id` previously received in a Credential Response will now yield a valid Deferred Credential Response, instead of an `issuance_pending` error. The Wallet should now attempt to retrieve the credential.
+
+## Event Notifications Flow
+
+Once the Wallet provides the necessary notification information, the Issuer can push notifications to the designated Receiver's Wallet Notification Endpoint (e.g., a Wallet Backend).
+
+It is RECOMMENDED that the Receiver includes the received Wallet-provided `notification_state` in the notification payload that is sent to the Wallet to enable the Wallet to correlate the notification with the corresponding event type and credential issuance session.
+
+**Example flow:**
+
+The following is a non-normative example of a Event Registration Request's payload:
+```json
+{
+  "events": [
+      {
+        "type": "credential_ready",
+        "notification_state": "djdk39djsn"
+      }
+  ],
+  "token": "endiekjsdliuhrljhbs9a8Ddknkamjbvsjgajgafoijlijkg",
+  "endpoint": "https://wallet-backend.com/notify"
+}
+```
+
+Based on this example, the Issuer will send the following request when the credential is ready:
+
+```http
+POST /notify HTTP/1.1
+Host: wallet-backend.com
+Content-Type: application/json
+Authorization: Bearer endiekjsdliuhrljhbs9a8Ddknkamjbvsjgajgafoijlijkg
+
+{
+  "notification_state": "djdk39djsn"
+}
+```
+
+The Receiver is expected to forward this to the Wallet via mechanisms like Firebase Cloud Messaging (FCM), including the `notification_state` as payload.
+
+The Wallet uses the received `notification_state` to identify the event type and credential issuance session it should act on.
+
+## Wallet Notification Endpoint
+
+This endpoint is used by the Receiver to consume the notification request from the Issuer.
+
+The endpoint MUST be protected with a Authorization Bearer token passed in the HTTP Authorization header that was received from the Wallet upon notification registration.
+
+### Wallet Notification Request
+
+An Issuer makes a Wallet Notification Request to the Wallet Notification Endpoint by sending the following parameters in the entity-body of an HTTP POST request using the `application/json` media type:
+
+* `notification_state`: as specified during registration
+
+Any additional parameters MUST be ignored if not understood.
+
+Below is a non-normative example of Notification Request:
+
+```http
+POST /notify HTTP/1.1
+Host: wallet-backend.com
+Content-Type: application/json
+Authorization: Bearer endiekjsdliuhrljhbs9a8Ddknkamjbvsjgajgafoijlijkg
+
+{
+  "notification_state": "djdk39djsn"
+}
+```
+
+### Successful Wallet Notification Response
+
+When the Receiver has successfully received the Wallet Notification Request from the Issuer, it MUST response with an HTTP status code in the 2xx range. Use of the HTTP status code 204 (No Content) is RECOMMENDED.
+
+Below is a non-normative example of response to a successful Notification Request:
+
+```http
+HTTP/1.1 204 No Content
+```
+
+### Wallet Notification Error Response
+
+If the Wallet Notification Request does not contain an Authorization Token or contains an invalid Authorization Token, the Wallet Notification Endpoint returns an Authorization Error Response, such as defined in Section 3 of [RFC6750].
+
+When the `notification_state` value is missing, the HTTP response MUST use the HTTP status code 400 (Bad Request) and set the content type to `application/json` with the following parameters in the JSON-encoded response body:
+
+* `error`: REQUIRED. The value of the error parameter SHOULD be one of the following ASCII [USASCII] error codes:
+  * `invalid_event_request`: The Notification Request is missing a required parameter, includes an unsupported parameter or parameter value, repeats the same parameter, or is otherwise malformed.
+
+In case the Receiver is returning a 5xx error or times out, it is up to the Issuer how to proceed.
+
 # Acknowledgements {#Acknowledgements}
 
-We would like to thank Richard Barnes, Paul Bastian, Vittorio Bertocci, Christian Bormann, John Bradley, Brian Campbell, Gabe Cohen, David Chadwick, Andrii Deinega, Giuseppe De Marco, Mark Dobrinic, Daniel Fett, Pedro Felix, George Fletcher, Christian Fries, Timo Glasta, Mark Haine, Fabian Hauck, Roland Hedberg, Joseph Heenan, Alen Horvat, Andrew Hughes, Jacob Ideskog, Lukasz Jaromin, Edmund Jay, Michael B. Jones, Tom Jones, Judith Kahrer, Takahiko Kawasaki, Niels Klomp, Ronald Koenig, Micha Kraus, Markus Kreusch, Philipp Lehwalder, Adam Lemmon, Dave Longley, David Luna, Daniel McGrogan, Jeremie Miller, Kenichi Nakamura, Rolson Quadras, Nat Sakimura, Sudesh Shetty, Oliver Terbu, Dimitri James Tsiflitzis, Mike Varley, Arjen van Veen, Jan Vereecken, David Waite, Jacob Ward for their valuable feedback and contributions to this specification.
+We would like to thank Richard Barnes, Paul Bastian, Vittorio Bertocci, Christian Bormann, John Bradley, Brian Campbell, Gabe Cohen, David Chadwick, Andrii Deinega, Giuseppe De Marco, Mark Dobrinic, Daniel Fett, Pedro Felix, George Fletcher, Christian Fries, Timo Glasta, Mark Haine, Fabian Hauck, Roland Hedberg, Joseph Heenan, Alen Horvat, Andrew Hughes, Jacob Ideskog, Lukasz Jaromin, Edmund Jay, Michael B. Jones, Tom Jones, Judith Kahrer, Takahiko Kawasaki, Niels Klomp, Ronald Koenig, Micha Kraus, Markus Kreusch, Philipp Lehwalder, Adam Lemmon, Dave Longley, David Luna, Daniel McGrogan, Jeremie Miller, Mirko Mollik, Kenichi Nakamura, Rolson Quadras, Nat Sakimura, Sudesh Shetty, Oliver Terbu, Dimitri James Tsiflitzis, Mike Varley, Arjen van Veen, Jan Vereecken, David Waite, Jacob Ward for their valuable feedback and contributions to this specification.
 
 # Notices
 
